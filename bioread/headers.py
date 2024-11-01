@@ -448,7 +448,8 @@ class ChannelDTypeHeader(BiopacHeader):
     CODE_MAP = {
         0: 'f8',
         1: 'f8',
-        2: 'i2'
+        2: 'i2',
+        3: 'i4', # int32
     }
 
     @property

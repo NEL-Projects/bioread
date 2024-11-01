@@ -25,7 +25,7 @@ class Datafile(object):
             self,
             graph_header=None, channel_headers=None, foreign_header=None,
             channel_dtype_headers=None, samples_per_second=None, name=None,
-            marker_header=None, marker_item_headers=None,):
+            marker_header=None, marker_item_headers=None, bits:int = 32):
         self.graph_header = graph_header
         self.channel_headers = channel_headers
         self.foreign_header = foreign_header
@@ -37,6 +37,7 @@ class Datafile(object):
         self.event_markers = None
         self.journal_header = None
         self.journal = None
+        self.bits = bits
         self.__named_channels = None
         self.__time_index = None
 
@@ -108,7 +109,8 @@ class Datafile(object):
                 chan_hdr=ch,
                 dtype_hdr=cdh,
                 samples_per_second=self.samples_per_second,
-                datafile=self)
+                datafile=self,
+                bits=self.bits)
             for ch, cdh in zip(
                 self.channel_headers, self.channel_dtype_headers)
         ]
@@ -129,7 +131,7 @@ class Channel(object):
             self,
             frequency_divider=None, raw_scale_factor=None, raw_offset=None,
             name=None, units=None, fmt_str=None, samples_per_second=None,
-            point_count=None, order_num=None, datafile=None):
+            point_count=None, order_num=None, datafile=None, bits: int = 32):
 
         self.frequency_divider = frequency_divider
         self.raw_scale_factor = raw_scale_factor
@@ -140,6 +142,7 @@ class Channel(object):
         self.samples_per_second = samples_per_second
         self.point_count = point_count
         self.dtype = np.dtype(fmt_str)
+        self.bits = bits
         # For some reason, scale and offset lie for float files
         if self.dtype.kind == 'f':
             self.raw_scale_factor = 1
@@ -160,7 +163,8 @@ class Channel(object):
             chan_hdr,
             dtype_hdr,
             samples_per_second,
-            datafile=None):
+            datafile=None,
+            bits:int = 32):
         divider = chan_hdr.frequency_divider
         chan_samp_per_sec = samples_per_second / divider
 
@@ -174,7 +178,8 @@ class Channel(object):
             samples_per_second=chan_samp_per_sec,
             point_count=chan_hdr.point_count,
             order_num=chan_hdr.order_num,
-            datafile=datafile
+            datafile=datafile,
+            bits=bits
         )
 
     def _allocate_raw_data(self):
@@ -219,8 +224,16 @@ class Channel(object):
         if self.dtype.kind == 'f':
             self.__data = self.raw_data
         else:
-            self.__data = (
-                (self.raw_data * self.raw_scale_factor) + self.raw_offset)
+            if self.bits == 16:
+                self.__data = np.float16(
+                    (self.raw_data * self.raw_scale_factor) + self.raw_offset)
+            elif self.bits == 64:
+                self.__data = np.float64(
+                    (self.raw_data * self.raw_scale_factor) + self.raw_offset)
+            else:  # Default to 32
+                self.__data = np.float32(
+                    (self.raw_data * self.raw_scale_factor) + self.raw_offset)
+
         return self.__data
 
     @property
@@ -238,8 +251,11 @@ class Channel(object):
         return self.__upsampled_data
 
     def free_data(self):
+        del self.raw_data
         self.raw_data = None
+        del self.__data
         self.__data = None
+        del self.__upsampled_data
         self.__upsampled_data = None
 
     def __str__(self):

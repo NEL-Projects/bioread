@@ -35,3 +35,6 @@ notebooks/
 
 # vscode
 .vscode/
+
+# pycharm
+.idea/

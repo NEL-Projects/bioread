@@ -1,21 +1,27 @@
 # Libraries for reading BIOPAC files
 
+**Modified version**: This version of bioread has been modified for reading .acq files in formats that aren't expected by the standard library, but are used by datasets that we have utilised. Originally based on version 3.0.1.
+
+
 [![DOI](https://zenodo.org/badge/970625.svg)](https://zenodo.org/badge/latestdoi/970625)
 
 These utilities are for reading the files produced by BIOPAC's AcqKnowledge software. Much of the information is based on [Application Note 156](http://www.biopac.com/Manuals/app_pdf/app156.pdf) from BIOPAC; however, newer file formats were decoded through the tireless efforts of John Ollinger and Nate Vack.
 
 This library is mostly concerned with getting you the data, and less so with interpreting UI-related header values.
 
-## Status
-
-As far as I know, this should read any AcqKnowledge file you throw at it. Windows, Mac, uncompressed, compressed, old, new... it should happily read 'em all. If you have trouble with a file, I'd love to get a copy and make bioread work with it.
 
 ## Installation
 
-We're up in [pypi](http://pypi.python.org/pypi), so installing should be as simple as:
+To use this EEnGine compatible fork of bioread you can simply add the following line into your project's *requirements.txt*:
 
 ```
-pip install bioread
+-e git+https://github.com/NEL-Projects/bioread#egg=bioread
+```
+
+If you'd rather manually install, you can do so with the following command in pip:
+
+```
+!pip install git+https://github.com/NEL-Projects/bioread.git
 ```
 
 Some of the optional parts of bioread depend on external libraries. `acq2hdf5` depends on [h5py](https://www.h5py.org/) and `acq2mat` depends on [scipy](https://www.scipy.org/), but as neither of those are core parts of bioread (and can be hairy to get working on some systems), they aren't installed by default. To get them, do:

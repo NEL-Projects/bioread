@@ -13,6 +13,7 @@ from __future__ import with_statement, division
 import struct
 import zlib
 from contextlib import contextmanager
+from io import BytesIO
 
 import numpy as np
 
@@ -46,7 +47,7 @@ MAX_DTYPE_SCANS = 4096
 
 
 class Reader(object):
-    def __init__(self, acq_file=None):
+    def __init__(self, acq_file=None, bits=32):
         self.acq_file = acq_file
         self.encoding = None  # We're gonna guess from _set_order_and_version
         self.datafile = None
@@ -66,12 +67,16 @@ class Reader(object):
         self.marker_header = None
         self.marker_item_headers = None
         self.event_markers = None
+        self.acq_compatibility_fallback = False
+        self.bits = bits
 
     @classmethod
     def read(cls,
              fo,
              channel_indexes=None,
-             target_chunk_size=CHUNK_SIZE):
+             target_chunk_size=CHUNK_SIZE,
+             file_lock=None,
+             bits=32):
         """ Read a biopac file into memory.
 
         fo: The name of the file to read, or a file-like object
@@ -80,8 +85,8 @@ class Reader(object):
 
         returns: reader.Reader.
         """
-        with open_or_yield(fo, 'rb') as io:
-            reader = cls(io)
+        with open_or_yield(fo, 'rb', True, file_lock) as io:
+            reader = cls(io, bits)
             reader._read_headers()
             reader._read_data(channel_indexes, target_chunk_size)
         return reader
@@ -113,12 +118,29 @@ class Reader(object):
     def is_compressed(self):
         return self.graph_header.compressed
 
+    def dummy_dtype_headers(self, repeats):
+        headers = []
+        for i in range(repeats):
+            h = ChannelDTypeHeader(self.file_revision,
+                                   self.byte_order_char,
+                                   encoding=self.encoding)
+            # h.unpack_from_file(self.acq_file, h_offset)
+            h.offset = 0
+            # self.__unpack_data()
+            h.data = {'nSize': 4, 'nType': 3}  # 3 for int32 with 4 bytes
+            # logger.debug("Read %s bytes: %s" % (
+            #    h.struct_dict.len_bytes, h.data))
+            # last_h_len = h.effective_len_bytes
+            self.data_start_offset = self.acq_file.tell()
+            headers.append(h)
+        return headers
+
     def _read_headers(self):
-        logger.debug("I am in _read_headers")
+        logger.info("I am in _read_headers")
         if self.byte_order_char is None:
             self.__set_order_and_version()
 
-        self.graph_header = self.__single_header(0, GraphHeader)
+        self.graph_header = self.__single_header(0, GraphHeader)  # This loads graph header - multiple values
         channel_count = self.graph_header.channel_count
 
         pad_start = self.graph_header.effective_len_bytes
@@ -137,7 +159,7 @@ class Reader(object):
 
         for i, ch in enumerate(self.channel_headers):
             logger.debug("Channel header %s: %s" % (i, ch.data))
-
+        # Should be the same
         fh_start = ch_start + len(self.channel_headers)*ch_len
         self.foreign_header = self.__single_header(fh_start, ForeignHeader)
 
@@ -145,14 +167,20 @@ class Reader(object):
         self.channel_dtype_headers = self.__scan_for_dtype_headers(
             cdh_start, channel_count)
         if self.channel_dtype_headers is None:
-            raise ValueError("Can't find valid channel data type headers")
+            print(
+                "[WARNING]: Skipping channel data type header search due to incompatible ACQ format. Falling back to compatibility mode...")
+            self.channel_dtype_headers = self.dummy_dtype_headers(channel_count)
+            self.data_start_offset = self.foreign_header.__getitem__("nLength") + 4 * len(
+                self.channel_headers) * ch_len + self.graph_header.__getitem__("lExtItemHeaderLen")
+            logger.debug("Overriding data start offset: %s" % self.data_start_offset)
+            self.acq_compatibility_fallback = True
+        else:
+            for i, cdt in enumerate(self.channel_dtype_headers):
+                logger.debug("Channel %s: type_code: %s, offset: %s" % (
+                    i, cdt.type_code, cdt.offset
+                ))
 
-        for i, cdt in enumerate(self.channel_dtype_headers):
-            logger.debug("Channel %s: type_code: %s, offset: %s" % (
-                i, cdt.type_code, cdt.offset
-            ))
-
-        logger.debug("Computed data start offset: %s" % self.data_start_offset)
+            logger.debug("Computed data start offset: %s" % self.data_start_offset)
 
         self.samples_per_second = 1000/self.graph_header.sample_time
 
@@ -162,7 +190,8 @@ class Reader(object):
             channel_headers=self.channel_headers,
             foreign_header=self.foreign_header,
             channel_dtype_headers=self.channel_dtype_headers,
-            samples_per_second=self.samples_per_second)
+            samples_per_second=self.samples_per_second,
+            bits=self.bits)
 
         logger.debug("Allocated a datafile!")
 
@@ -171,14 +200,16 @@ class Reader(object):
 
         # In compressed files, markers come before compressed data. But
         # data_length is 0 for compressed files.
-        self.marker_start_offset = (self.data_start_offset + self.data_length)
-        self._read_markers()
-        try:
-            self._read_journal()
-        except struct.error:
-            logger.info("No journal information found.")
-        if self.is_compressed:
-            self.__read_compression_headers()
+        # Note: Skipping section for now for compatibility reasons
+        # if self.acq_compatibility_fallback == False: # For alternative acq format data_start_offset is different
+        #     self.marker_start_offset = (self.data_start_offset + self.data_length)
+        #     self._read_markers()
+        #     try:
+        #         self._read_journal()
+        #     except (struct.error, ValueError):
+        #         logger.info("No journal information found.")
+        #     if self.is_compressed:
+        #         self.__read_compression_headers()
 
     def __scan_for_dtype_headers(self, start_index, channel_count):
         # Sometimes the channel dtype headers don't seem to be right after the
@@ -395,7 +426,7 @@ class Reader(object):
 
 
 @contextmanager
-def open_or_yield(thing, mode):
+def open_or_yield(thing, mode, whole_file: bool = False, file_lock=None):
     """ If 'thing' is a string, open it and yield it. Otherwise, yield it.
 
     This lets you use a filename, open file, other IO object. If 'thing' was
@@ -403,7 +434,12 @@ def open_or_yield(thing, mode):
     """
     if isinstance(thing, str):
         with open(thing, mode) as f:
-            yield(f)
+            if whole_file and file_lock != None:
+                with file_lock:
+                    buf = BytesIO(f.read())
+                yield(buf)
+            else:
+                yield(f)
     else:
         yield(thing)
 
