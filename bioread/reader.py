@@ -91,7 +91,7 @@ class Reader(object):
 
         returns: reader.Reader.
         """
-        with open_or_yield(fo, 'rb', True, file_lock) as io:
+        with open_or_yield(fo, 'rb', not stream, file_lock) as io:
             reader = cls(io, bits)
             reader._read_headers()
             reader._read_data(channel_indexes, target_chunk_size, stream, start_sample, sample_count)
