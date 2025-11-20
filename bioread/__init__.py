@@ -27,14 +27,12 @@ def read(filelike, channel_indexes=None, file_lock=None, bits=32, stream=False, 
     start_sample: Starting sample position for streaming mode (default: 0)
     sample_count: Number of samples to read in streaming mode (default: None = all)
     """
-    if stream==True:
-        raise ValueError("For streaming, please use reader_for_streaming instead.")
     return reader.Reader.read(
         filelike,
         channel_indexes,
         file_lock=file_lock,
         bits=bits,
-        stream=False,
+        stream=stream,
         start_sample=start_sample,
         sample_count=sample_count
     ).datafile
