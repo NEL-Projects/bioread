@@ -25,7 +25,7 @@ def read(filelike, channel_indexes=None, file_lock=None, bits=32, stream=False, 
                         have empty data.
     file_lock: An optional lock used for multiprocessing
     bits: The number of bits channel data should be loaded in (16 bit, 32 bit or 64 bit)
-    Removed: stream: Enable streaming mode to read only a portion of the file (default: False)
+    stream: Enable streaming mode to read only a portion of the file (default: False)
     start_sample: Starting sample position for streaming mode (default: 0)
     sample_count: Number of samples to read in streaming mode (default: None = all)
     """
