@@ -120,6 +120,97 @@ class Reader(object):
             channel_indexes,
             target_chunk_size)
 
+    def read_range(self, start_sample=None, sample_count=None,
+                   start_seconds=None, duration_seconds=None,
+                   channel_indexes=None, target_chunk_size=CHUNK_SIZE):
+        """
+        Read a specific range of data from the already-opened file.
+
+        Can specify range either in samples (start_sample, sample_count) or
+        in time (start_seconds, duration_seconds). Time-based parameters take
+        precedence if both are provided.
+
+        This method can be called multiple times on the same Reader instance
+        without closing the file. Each call replaces the data in datafile.channels
+        with the newly requested range.
+
+        Args:
+            start_sample: Starting sample index (0-based)
+            sample_count: Number of samples to read (None = read to end)
+            start_seconds: Starting time in seconds (overrides start_sample)
+            duration_seconds: Duration in seconds (overrides sample_count)
+            channel_indexes: List of channel indices to read (None = all)
+            target_chunk_size: Chunk size for reading (default: CHUNK_SIZE)
+
+        Returns:
+            Datafile object with the requested data range
+
+        Raises:
+            TypeError: If file is compressed (streaming not supported)
+            ValueError: If headers haven't been read yet
+
+        Example:
+            reader = Reader.read_headers('myfile.acq')
+            # Read first 2 minutes
+            data = reader.read_range(duration_seconds=120)
+            # Read samples 1000-2000
+            data = reader.read_range(start_sample=1000, sample_count=1000)
+        """
+        if self.datafile is None:
+            raise ValueError("Headers must be read first. Call _read_headers() or use reader_for_streaming()")
+
+        if self.is_compressed:
+            raise TypeError('Streaming is not supported for compressed files')
+
+        # Convert time-based parameters to sample-based if provided
+        actual_start_sample = start_sample if start_sample is not None else 0
+        actual_sample_count = sample_count
+
+        if start_seconds is not None:
+            actual_start_sample = int(start_seconds * self.samples_per_second)
+
+        if duration_seconds is not None:
+            actual_sample_count = int(duration_seconds * self.samples_per_second)
+
+        # Clear previous channel data to prevent accumulation
+        self._clear_channel_data()
+
+        # Read the requested range
+        self._read_data(
+            channel_indexes,
+            target_chunk_size,
+            stream=True,
+            start_sample=actual_start_sample,
+            sample_count=actual_sample_count
+        )
+
+        return self.datafile
+
+    def _clear_channel_data(self):
+        """Clear data from all channels to prepare for new read."""
+        if self.datafile is not None:
+            for ch in self.datafile.channels:
+                # Store original point count if not already stored
+                if not hasattr(ch, '_header_point_count'):
+                    ch._header_point_count = ch.point_count
+
+                # Clear data arrays
+                ch.raw_data = None
+                ch._Channel__data = None
+                if hasattr(ch, '_Channel__upsampled_data'):
+                    ch._Channel__upsampled_data = None
+
+                # Restore original point count from header
+                ch.point_count = ch._header_point_count
+
+                # Clear streaming-specific attributes
+                if hasattr(ch, '_stream_start_sample'):
+                    delattr(ch, '_stream_start_sample')
+                if hasattr(ch, '_channel_start_sample'):
+                    delattr(ch, '_channel_start_sample')
+                if hasattr(ch, '_original_point_count'):
+                    delattr(ch, '_original_point_count')
+
     @property
     def is_compressed(self):
         return self.graph_header.compressed
