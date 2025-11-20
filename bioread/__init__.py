@@ -10,6 +10,8 @@
 
 from __future__ import absolute_import
 
+from warnings import deprecated
+
 from bioread import reader
 
 from ._metadata import version as __version__, author as __author__  # noqa
@@ -48,7 +50,7 @@ def read_headers(filelike):
     """
     return reader.Reader.read_headers(filelike).datafile
 
-
+@deprecated
 def reader_for_streaming(io):
     """
     Read the headers of a file, return a Reader object that allows multiple
@@ -84,7 +86,7 @@ def reader_for_streaming(io):
         raise TypeError('{0} must be opened in binary mode'.format(io))
     return reader.Reader.read_headers(io)
 
-
+@deprecated
 def read_initial_data(filelike, seconds=120, channel_indexes=None, bits=32):
     """
     Convenience function: Open a file, read the first N seconds of data,
