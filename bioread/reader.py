@@ -87,7 +87,7 @@ class Reader(object):
         target_chunk_size: The amount of data to read in a chunk.
         stream: Enable streaming mode to read only a portion of the file
         start_sample: Starting sample position for streaming mode
-        sample_count: Number of samples to read in streaming mode
+        sample_count: Number of samples to read in streaming mode (defaults to 10 seconds when stream=True)
 
         returns: reader.Reader.
         """
@@ -413,6 +413,11 @@ class Reader(object):
     def _read_data(self, channel_indexes, target_chunk_size=CHUNK_SIZE, stream=False, start_sample=0, sample_count=None):
         if stream and self.is_compressed:
             raise TypeError('Streaming mode is not supported for compressed files')
+
+        # Default to 10 seconds of data when streaming without explicit sample_count
+        if stream and sample_count is None:
+            sample_count = int(self.samples_per_second * 10)
+            logger.debug(f"Streaming mode: defaulting to 10 seconds ({sample_count} samples)")
 
         if self.is_compressed:
             self.__read_data_compressed(channel_indexes)
