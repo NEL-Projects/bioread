@@ -76,19 +76,25 @@ class Reader(object):
              channel_indexes=None,
              target_chunk_size=CHUNK_SIZE,
              file_lock=None,
-             bits=32):
+             bits=32,
+             stream=False,
+             start_sample=0,
+             sample_count=None):
         """ Read a biopac file into memory.
 
         fo: The name of the file to read, or a file-like object
         channel_indexes: The numbers of the channels you want to read
         target_chunk_size: The amount of data to read in a chunk.
+        stream: Enable streaming mode to read only a portion of the file
+        start_sample: Starting sample position for streaming mode
+        sample_count: Number of samples to read in streaming mode
 
         returns: reader.Reader.
         """
         with open_or_yield(fo, 'rb', True, file_lock) as io:
             reader = cls(io, bits)
             reader._read_headers()
-            reader._read_data(channel_indexes, target_chunk_size)
+            reader._read_data(channel_indexes, target_chunk_size, stream, start_sample, sample_count)
         return reader
 
     @classmethod
@@ -113,6 +119,97 @@ class Reader(object):
             self.datafile.channels,
             channel_indexes,
             target_chunk_size)
+
+    def read_range(self, start_sample=None, sample_count=None,
+                   start_seconds=None, duration_seconds=None,
+                   channel_indexes=None, target_chunk_size=CHUNK_SIZE):
+        """
+        Read a specific range of data from the already-opened file.
+
+        Can specify range either in samples (start_sample, sample_count) or
+        in time (start_seconds, duration_seconds). Time-based parameters take
+        precedence if both are provided.
+
+        This method can be called multiple times on the same Reader instance
+        without closing the file. Each call replaces the data in datafile.channels
+        with the newly requested range.
+
+        Args:
+            start_sample: Starting sample index (0-based)
+            sample_count: Number of samples to read (None = read to end)
+            start_seconds: Starting time in seconds (overrides start_sample)
+            duration_seconds: Duration in seconds (overrides sample_count)
+            channel_indexes: List of channel indices to read (None = all)
+            target_chunk_size: Chunk size for reading (default: CHUNK_SIZE)
+
+        Returns:
+            Datafile object with the requested data range
+
+        Raises:
+            TypeError: If file is compressed (streaming not supported)
+            ValueError: If headers haven't been read yet
+
+        Example:
+            reader = Reader.read_headers('myfile.acq')
+            # Read first 2 minutes
+            data = reader.read_range(duration_seconds=120)
+            # Read samples 1000-2000
+            data = reader.read_range(start_sample=1000, sample_count=1000)
+        """
+        if self.datafile is None:
+            raise ValueError("Headers must be read first. Call _read_headers() or use reader_for_streaming()")
+
+        if self.is_compressed:
+            raise TypeError('Streaming is not supported for compressed files')
+
+        # Convert time-based parameters to sample-based if provided
+        actual_start_sample = start_sample if start_sample is not None else 0
+        actual_sample_count = sample_count
+
+        if start_seconds is not None:
+            actual_start_sample = int(start_seconds * self.samples_per_second)
+
+        if duration_seconds is not None:
+            actual_sample_count = int(duration_seconds * self.samples_per_second)
+
+        # Clear previous channel data to prevent accumulation
+        self._clear_channel_data()
+
+        # Read the requested range
+        self._read_data(
+            channel_indexes,
+            target_chunk_size,
+            stream=True,
+            start_sample=actual_start_sample,
+            sample_count=actual_sample_count
+        )
+
+        return self.datafile
+
+    def _clear_channel_data(self):
+        """Clear data from all channels to prepare for new read."""
+        if self.datafile is not None:
+            for ch in self.datafile.channels:
+                # Store original point count if not already stored
+                if not hasattr(ch, '_header_point_count'):
+                    ch._header_point_count = ch.point_count
+
+                # Clear data arrays
+                ch.raw_data = None
+                ch._Channel__data = None
+                if hasattr(ch, '_Channel__upsampled_data'):
+                    ch._Channel__upsampled_data = None
+
+                # Restore original point count from header
+                ch.point_count = ch._header_point_count
+
+                # Clear streaming-specific attributes
+                if hasattr(ch, '_stream_start_sample'):
+                    delattr(ch, '_stream_start_sample')
+                if hasattr(ch, '_channel_start_sample'):
+                    delattr(ch, '_channel_start_sample')
+                if hasattr(ch, '_original_point_count'):
+                    delattr(ch, '_original_point_count')
 
     @property
     def is_compressed(self):
@@ -313,11 +410,14 @@ class Reader(object):
             headers.append(h)
         return headers
 
-    def _read_data(self, channel_indexes, target_chunk_size=CHUNK_SIZE):
+    def _read_data(self, channel_indexes, target_chunk_size=CHUNK_SIZE, stream=False, start_sample=0, sample_count=None):
+        if stream and self.is_compressed:
+            raise TypeError('Streaming mode is not supported for compressed files')
+
         if self.is_compressed:
             self.__read_data_compressed(channel_indexes)
         else:
-            self.__read_data_uncompressed(channel_indexes, target_chunk_size)
+            self.__read_data_uncompressed(channel_indexes, target_chunk_size, stream, start_sample, sample_count)
 
     def _read_markers(self):
         if self.marker_start_offset is None:
@@ -379,14 +479,17 @@ class Reader(object):
             decomp_data = zlib.decompress(comp_data)
             channel.raw_data = np.frombuffer(decomp_data, dtype=dt)
 
-    def __read_data_uncompressed(self, channel_indexes, target_chunk_size):
+    def __read_data_uncompressed(self, channel_indexes, target_chunk_size, stream=False, start_sample=0, sample_count=None):
         self.acq_file.seek(self.data_start_offset)
         # This will fill self.datafile.channels with data.
         read_uncompressed(
             self.acq_file,
             self.datafile.channels,
             channel_indexes,
-            target_chunk_size)
+            target_chunk_size,
+            stream,
+            start_sample,
+            sample_count)
 
     def __set_order_and_version(self):
         # Try unpacking the version string in both a bid and little-endian
@@ -455,7 +558,10 @@ def read_uncompressed(
         f,
         channels,
         channel_indexes=None,
-        target_chunk_size=CHUNK_SIZE):
+        target_chunk_size=CHUNK_SIZE,
+        stream=False,
+        start_sample=0,
+        sample_count=None):
     """
     Read the uncompressed data.
 
@@ -470,6 +576,10 @@ def read_uncompressed(
     target_chunk_size gives a general idea of how much data the program should
     read into memory at a time. You can probably always leave this as at its
     default.
+
+    stream: Enable streaming mode to read only a portion of the file
+    start_sample: Starting sample position for streaming mode
+    sample_count: Number of samples to read in streaming mode
 
     This function returns nothing; it modifies channels in-place.
 
@@ -490,11 +600,47 @@ def read_uncompressed(
     if channel_indexes is None:
         channel_indexes = np.arange(len(channels))
 
-    for i in channel_indexes:
-        channels[i]._allocate_raw_data()
+    # Handle streaming mode - adjust channel point counts and allocate appropriately
+    if stream:
+        for i in channel_indexes:
+            ch = channels[i]
+            original_point_count = ch.point_count
+            div = ch.frequency_divider
+
+            # Calculate how many samples this channel has in the requested range
+            # start_sample and sample_count are in terms of the base sampling rate
+            # We need to convert to this channel's sampling rate
+
+            # Find the first channel sample at or after start_sample
+            # Channel sample N occurs at base time N * div
+            # We want the first N where N * div >= start_sample
+            # This is ceil(start_sample / div)
+            channel_start_sample = (start_sample + div - 1) // div  # Ceiling division
+
+            if sample_count is not None:
+                # Calculate end sample in base rate, then convert to channel rate
+                base_end_sample = start_sample + sample_count
+                # We want channel samples where N * div < base_end_sample
+                # The last such N is floor((base_end_sample - 1) / div)
+                # But for the count, we want ceil(base_end_sample / div)
+                channel_end_sample = (base_end_sample + div - 1) // div  # Ceiling division
+                channel_sample_count = channel_end_sample - channel_start_sample
+                ch.point_count = min(channel_sample_count, original_point_count - channel_start_sample)
+            else:
+                ch.point_count = original_point_count - channel_start_sample
+
+            # Store original point count and start sample for time index adjustment
+            ch._original_point_count = original_point_count
+            ch._stream_start_sample = start_sample
+            ch._channel_start_sample = channel_start_sample
+
+            channels[i]._allocate_raw_data()
+    else:
+        for i in channel_indexes:
+            channels[i]._allocate_raw_data()
 
     chunker = make_chunk_reader(
-        f, channels, channel_indexes, target_chunk_size)
+        f, channels, channel_indexes, target_chunk_size, stream, start_sample, sample_count)
     for chunk_buffers in chunker:
         for i in channel_indexes:
             ch = channels[i]
@@ -508,22 +654,102 @@ def make_chunk_reader(
         f,
         channels,
         channel_indexes=None,
-        target_chunk_size=CHUNK_SIZE):
+        target_chunk_size=CHUNK_SIZE,
+        stream=False,
+        start_sample=0,
+        sample_count=None):
 
     if channel_indexes is None:
         channel_indexes = np.arange(len(channels))
 
+    divs = np.array([c.frequency_divider for c in channels])
+    sizes = np.array([c.sample_size for c in channels])
+    spat = sample_pattern(divs)
+
     byte_pattern = chunk_byte_pattern(channels, target_chunk_size)
     logger.debug('Using chunk size: {0} bytes'.format(len(byte_pattern)))
     buffers = [ChunkBuffer(c) for c in channels]
-    return read_chunks(f, buffers, byte_pattern, channel_indexes)
+
+    # For streaming with start_sample > 0, we need to calculate the byte offset
+    # to seek to in the file based on the interleaved pattern
+    pattern_offset_samples = 0
+    if stream and start_sample > 0:
+        # The sample pattern represents samples over one LCM period (base times)
+        # Each base time can have multiple channels sampling
+        # We need to count how many pattern entries correspond to each base time
+        lcm_period = least_common_multiple(*divs)
+
+        # Calculate bytes per complete LCM period
+        byte_counts = sizes[spat]
+        bpat = spat.repeat(byte_counts)
+        bytes_per_pattern = len(bpat)
+
+        # Calculate how many complete LCM periods we need to skip
+        complete_periods = start_sample // lcm_period
+        remainder_base_times = start_sample % lcm_period
+
+        # Seek to the start of the period containing start_sample
+        skip_bytes = complete_periods * bytes_per_pattern
+
+        pattern_samples_to_skip = 0
+        if remainder_base_times > 0:
+            # For the remainder, count how many samples in the pattern
+            # correspond to base times 0 through remainder_base_times-1
+            # We need to count which pattern entries correspond to each base time
+            for base_time in range(remainder_base_times):
+                # Count how many channels sample at this base time
+                for ch_idx, div in enumerate(divs):
+                    if base_time % div == 0:
+                        pattern_samples_to_skip += 1
+
+            # Calculate bytes for these samples
+            partial_spat = spat[:pattern_samples_to_skip]
+            partial_byte_counts = sizes[partial_spat]
+            partial_bpat = partial_spat.repeat(partial_byte_counts)
+            skip_bytes += len(partial_bpat)
+
+        logger.debug('Streaming: seeking {0} bytes forward for start_sample {1}'.format(
+            skip_bytes, start_sample))
+        f.seek(f.tell() + skip_bytes)
+
+        # After seeking, we're at position pattern_samples_to_skip in the pattern
+        # We need to rotate the byte_pattern to start from this position
+        pattern_offset_samples = pattern_samples_to_skip
+
+    # Adjust byte_pattern if we've seeked into the middle of a pattern
+    if pattern_offset_samples > 0:
+        # Calculate byte offset within the pattern
+        sample_byte_pattern = spat.repeat(sizes[spat])
+        pattern_byte_len = len(sample_byte_pattern)
+
+        # Calculate byte offset for the samples we skipped within this pattern
+        byte_offset = 0
+        for i in range(pattern_offset_samples):
+            byte_offset += sizes[spat[i]]
+
+        # Rotate the byte pattern to start from the correct position
+        byte_pattern_single = sample_byte_pattern
+        # Rotate: take everything from byte_offset onwards, then everything before byte_offset
+        rotated_single = np.concatenate([
+            byte_pattern_single[byte_offset:],
+            byte_pattern_single[:byte_offset]
+        ])
+
+        # Tile it to match the target chunk size
+        reps = chunk_pattern_reps(target_chunk_size, len(rotated_single))
+        byte_pattern = np.tile(rotated_single, reps)
+
+    return read_chunks(f, buffers, byte_pattern, channel_indexes, stream, sample_count)
 
 
-def read_chunks(f, buffers, byte_pattern, channel_indexes):
+def read_chunks(f, buffers, byte_pattern, channel_indexes, stream=False, sample_count=None):
     """
     Read data in chunks from f. For each chunk, yield a list of buffers with
     information on how much of the buffer is filled and where the data should
     go in the target array.
+
+    stream: Whether we're in streaming mode
+    sample_count: Maximum number of samples to read (for streaming mode)
     """
     channel_bytes_remaining = np.array(
         [b.channel.data_length for b in buffers])
