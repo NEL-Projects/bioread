@@ -15,17 +15,27 @@ from bioread import reader
 from ._metadata import version as __version__, author as __author__  # noqa
 
 
-def read(filelike, channel_indexes=None, file_lock=None, bits=32):
+def read(filelike, channel_indexes=None, file_lock=None, bits=32, stream=False, start_sample=0, sample_count=None):
     """
     Read a file (either an IO object or a filename) and return a Datafile.
 
     channel_indexes:    A list of integer channel numbers. Other channels will
                         have empty data.
-    target_chunk_size:  A guide for the number of bytes to read at a time.
     file_lock: An optional lock used for multiprocessing
     bits: The number of bits channel data should be loaded in (16 bit, 32 bit or 64 bit)
+    stream: Enable streaming mode to read only a portion of the file (default: False)
+    start_sample: Starting sample position for streaming mode (default: 0)
+    sample_count: Number of samples to read in streaming mode (default: None = all)
     """
-    return reader.Reader.read(filelike, channel_indexes, file_lock=file_lock, bits=bits).datafile
+    return reader.Reader.read(
+        filelike,
+        channel_indexes,
+        file_lock=file_lock,
+        bits=bits,
+        stream=stream,
+        start_sample=start_sample,
+        sample_count=sample_count
+    ).datafile
 
 
 # Deprecated; provided for compatibility with previous versions.

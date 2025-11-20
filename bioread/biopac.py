@@ -208,6 +208,13 @@ class Channel(object):
         if self.datafile is None:
             return None
         div = self.frequency_divider
+
+        # Handle streaming mode with start sample offset
+        if hasattr(self, '_channel_start_sample') and self._channel_start_sample > 0:
+            # Use the pre-calculated channel start sample index
+            full_time_index = self.datafile.time_index[::div]
+            return full_time_index[self._channel_start_sample:self._channel_start_sample + self.point_count]
+
         return self.datafile.time_index[::div][0:self.point_count]
 
     @property
